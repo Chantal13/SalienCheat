@@ -105,7 +105,6 @@ $FailSleep = 3;
 $OldScore = 0;
 $LastKnownPlanet = 0;
 $BestPlanetAndZone = 0;
-$HasReachedMaxLevel = 0;
 
 if( ini_get( 'precision' ) < 18 )
 {
@@ -136,18 +135,6 @@ do
 			Msg( '{green}--{yellow} https://steamcommunity.com/saliengame/play' );
 			Msg( '{green}-- Happy farming!' );
 		}
-
-		// Randomizer is here to help reduce load on Steam servers
-		// Zones are sharded, and if everyone targets the same zone, it ends up worse for everyone
-		// By giving errors like time not synced or failed to join.
-		// Everyone at level 25 is already at the max level
-		// So please don't change this and let's get this mini game over with
-		if( $Data[ 'response' ][ 'level' ] >= 25 )
-		{
-			$HasReachedMaxLevel = 1;
-
-			Msg( '{yellow}-- You will be joining random zones to reduce Steam server load and help capture planets faster' );
-		}
 	}
 }
 while( !isset( $Data[ 'response' ][ 'score' ] ) && sleep( $FailSleep ) === 0 );
@@ -158,7 +145,7 @@ do
 	{
 		do
 		{
-			$BestPlanetAndZone = GetBestPlanetAndZone( $HasReachedMaxLevel, $WaitTime, $FailSleep );
+			$BestPlanetAndZone = GetBestPlanetAndZone( $WaitTime, $FailSleep );
 		}
 		while( !$BestPlanetAndZone && sleep( $FailSleep ) === 0 );
 	}
@@ -221,6 +208,7 @@ do
 			$Time = microtime( true );
 			$UseHeal = 0;
 			$DamageToBoss = $WaitingForPlayers ? 0 : 1;
+
 			$DamageTaken = 0;
 
 			if( $Time >= $NextHeal )
@@ -437,7 +425,7 @@ do
 
 	do
 	{
-		$BestPlanetAndZone = GetBestPlanetAndZone( $HasReachedMaxLevel, $WaitTime, $FailSleep );
+		$BestPlanetAndZone = GetBestPlanetAndZone( $WaitTime, $FailSleep );
 	}
 	while( !$BestPlanetAndZone && sleep( $FailSleep ) === 0 );
 
@@ -499,11 +487,6 @@ do
 				'>> Next Level: {yellow}' . number_format( $Data[ 'next_level_score' ] ) .
 				'{normal} - Remaining: {yellow}' . number_format( $Data[ 'next_level_score' ] - $Data[ 'new_score' ] )
 			);
-		}
-
-		if( $Data[ 'new_level' ] >= 25 )
-		{
-			$HasReachedMaxLevel = 1;
 		}
 	}
 }
@@ -613,7 +596,7 @@ function GetNameForDifficulty( $Zone )
 	return $Boss . $Difficulty;
 }
 
-function GetPlanetState( $Planet, $HasReachedMaxLevel, $WaitTime )
+function GetPlanetState( $Planet, $WaitTime )
 {
 	$Zones = SendGET( 'ITerritoryControlMinigameService/GetPlanet', 'id=' . $Planet . '&language=english' );
 
@@ -628,7 +611,6 @@ function GetPlanetState( $Planet, $HasReachedMaxLevel, $WaitTime )
 	$MediumZones = 0;
 	$LowZones = 0;
 	$BossZones = [];
-	$HalfZones = [];
 
 	foreach( $Zones as &$Zone )
 	{
@@ -652,18 +634,10 @@ function GetPlanetState( $Planet, $HasReachedMaxLevel, $WaitTime )
 		{
 			$BossZones[] = $Zone;
 		}
-		// It appears that bosses like to spawn when a random zone gets over 50% capture progress
-		// So we will target fresh zones to bring them up to speed
-		else if( $Zone[ 'capture_progress' ] < 0.45 )
-		{
-			$HalfZones[] = $Zone;
-		}
-
-		$Cutoff = ( $Zone[ 'difficulty' ] < 2 && !$HasReachedMaxLevel ) ? 0.90 : 0.99;
 
 		// If a zone is close to completion, skip it because we want to avoid joining a completed zone
 		// Valve now rewards points, if the zone is completed before submission
-		if( $Zone[ 'capture_progress' ] >= $Cutoff )
+		if( $Zone[ 'capture_progress' ] >= 0.98 )
 		{
 			continue;
 		}
@@ -683,41 +657,22 @@ function GetPlanetState( $Planet, $HasReachedMaxLevel, $WaitTime )
 	if( !empty( $BossZones ) )
 	{
 		$CleanZones = $BossZones;
-		goto bossLabel;
 	}
 	else if( count( $CleanZones ) < 2 )
 	{
 		return false;
 	}
 
-	if( $HasReachedMaxLevel )
+	usort( $CleanZones, function( $a, $b )
 	{
-		if( count( $HalfZones ) > 3 )
+		if( $b[ 'difficulty' ] === $a[ 'difficulty' ] )
 		{
-			$CleanZones = $HalfZones;
+			return $b[ 'zone_position' ] - $a[ 'zone_position' ];
 		}
 
-		shuffle( $CleanZones );
-	}
-	else
-	{
-		usort( $CleanZones, function( $a, $b )
-		{
-			if( $b[ 'difficulty' ] === $a[ 'difficulty' ] )
-			{
-				if( (int)( $a[ 'capture_progress' ] * 100 ) !== (int)( $b[ 'capture_progress' ] * 100 ) )
-				{
-					return (int)( $a[ 'capture_progress' ] * 100000 ) - (int)( $b[ 'capture_progress' ] * 100000 );
-				}
+		return $b[ 'difficulty' ] - $a[ 'difficulty' ];
+	} );
 
-				return $b[ 'zone_position' ] - $a[ 'zone_position' ];
-			}
-
-			return $b[ 'difficulty' ] - $a[ 'difficulty' ];
-		} );
-	}
-
-bossLabel:
 	return [
 		'high_zones' => $HighZones,
 		'medium_zones' => $MediumZones,
@@ -726,7 +681,7 @@ bossLabel:
 	];
 }
 
-function GetBestPlanetAndZone( $HasReachedMaxLevel, $WaitTime, $FailSleep )
+function GetBestPlanetAndZone( $WaitTime, $FailSleep )
 {
 	$Planets = SendGET( 'ITerritoryControlMinigameService/GetPlanets', 'active_only=1&language=english' );
 
@@ -769,7 +724,7 @@ function GetBestPlanetAndZone( $HasReachedMaxLevel, $WaitTime, $FailSleep )
 
 		do
 		{
-			$Zone = GetPlanetState( $Planet[ 'id' ], $HasReachedMaxLevel, $WaitTime );
+			$Zone = GetPlanetState( $Planet[ 'id' ], $WaitTime );
 		}
 		while( $Zone === null && sleep( $FailSleep ) === 0 );
 
@@ -810,34 +765,19 @@ function GetBestPlanetAndZone( $HasReachedMaxLevel, $WaitTime, $FailSleep )
 				return $Planet;
 			}
 
+			if( $Planet[ 'low_zones' ] > 0 )
+			{
+				$Planet[ 'sort_key' ] += 99 - $Planet[ 'low_zones' ];
+			}
+
 			if( $Planet[ 'medium_zones' ] > 0 )
 			{
 				$Planet[ 'sort_key' ] += pow( 10, 2 ) * ( 99 - $Planet[ 'medium_zones' ] );
 			}
 
-			if( $HasReachedMaxLevel )
+			if( $Planet[ 'high_zones' ] > 0 )
 			{
-				if( $Planet[ 'low_zones' ] > 0 )
-				{
-					$Planet[ 'sort_key' ] += pow( 10, 4 ) * ( 99 - $Planet[ 'low_zones' ] );
-				}
-
-				if( $Planet[ 'high_zones' ] > 0 )
-				{
-					$Planet[ 'sort_key' ] += 99 - $Planet[ 'high_zones' ];
-				}
-			}
-			else
-			{
-				if( $Planet[ 'low_zones' ] > 0 )
-				{
-					$Planet[ 'sort_key' ] += 99 - $Planet[ 'low_zones' ];
-				}
-
-				if( $Planet[ 'high_zones' ] > 0 )
-				{
-					$Planet[ 'sort_key' ] += pow( 10, 4 ) * ( 99 - $Planet[ 'high_zones' ] );
-				}
+				$Planet[ 'sort_key' ] += pow( 10, 4 ) * ( 99 - $Planet[ 'high_zones' ] );
 			}
 		}
 	}
